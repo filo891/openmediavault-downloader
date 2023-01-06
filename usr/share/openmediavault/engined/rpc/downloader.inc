@@ -28,6 +28,7 @@ class OMVRpcServiceDownloader extends \OMV\Rpc\ServiceAbstract
     private $getCurl = "/usr/bin/curl";
     private $getLogFile = "/var/log/downloader.log";
     private $getPidDir = "/var/run/";
+    private $getStdoutLogDir = "/tmp/";
     private $getYoutubedl = "/usr/bin/youtube-dl";
     private $getUloztoDownloader = "/usr/local/bin/ulozto-downloader";
 
@@ -84,6 +85,19 @@ class OMVRpcServiceDownloader extends \OMV\Rpc\ServiceAbstract
             $basename = sprintf("%s", $objectv->get("filename"));
             $dlType = $objectv->get('dltype');
 
+            // Define the file name for the STDOUT capture
+            $stdoutFile = sprintf("%sdownloader-%s.stdout", $this->getStdoutLogDir, $objectv->get('uuid'));
+            $status = null;
+            
+            if ($dlType == "ulozto-downloader" && file_exists($stdoutFile)) {
+                $status = $this->parseUloztoDownloaderLog($stdoutFile);
+                if ($status && $basename === "") {
+                    // In case the destination file name has not been set by the user but autognerated by the downloader find it out
+                    $basename = $status->file;
+                    $objectv->set("filename", $basename);
+                }
+            }
+
             $filename = sprintf("%s/%s", $sfPath, $basename);
             $finalExt = $objectv->get('format');
             $finalfilename = sprintf("%s/%s.%s", $sfPath, $basename, $finalExt);
@@ -94,11 +108,15 @@ class OMVRpcServiceDownloader extends \OMV\Rpc\ServiceAbstract
 
             if (file_exists($pid)) {
                 $objectv->set('downloading', true);
-
             }
+
             if ($dlType == "playlist" || $dlType == "multiple") {
                 $objectv->set('filesize', 0);
-            } else {
+            } 
+            elseif ($dlType == "ulozto-downloader" && $status) {
+                $objectv->set('filesize', intval(floatval($status->downloaded)*1024*1024));
+            }
+            else {
                 if (file_exists($filename)) {
                     //curl 
                     $objectv->set('filesize', intval(filesize($filename)));
@@ -235,6 +253,7 @@ class OMVRpcServiceDownloader extends \OMV\Rpc\ServiceAbstract
                 break;
         }
         $cmdArgs = [];
+        $captureStdout = false;
 
         switch ($dltype) {
             case "curl":
@@ -247,12 +266,14 @@ class OMVRpcServiceDownloader extends \OMV\Rpc\ServiceAbstract
 
             case "ulozto-downloader":
                 $cmdBin = $this->getUloztoDownloader;
-                $cmdArgs[] = "--temp /tmp";
+                //$cmdArgs[] = "--temp /tmp";
                 $cmdArgs[] = "--auto-captcha";
+                $cmdArgs[] = "--frontend JSON";
                 $cmdArgs[] = sprintf("--output \"%s/%s\"", $sfPath, $filename);
-                $cmdArgs[] = sprintf("--log \"%s\"", $this->getLogFile);
-                $cmdArgs[] = sprintf("--parts \"%s\"", $partcount);
+                //$cmdArgs[] = sprintf("--log \"%s\"", $this->getLogFile);
+                //$cmdArgs[] = sprintf("--parts \"%s\"", $partcount);
                 $cmdArgs[] = sprintf("\"%s\"", $url);
+                $captureStdout = true;
                 break;
 
             case "youtube-dl":
@@ -328,12 +349,21 @@ class OMVRpcServiceDownloader extends \OMV\Rpc\ServiceAbstract
         $pid = sprintf("%sdownloader-%s.pid", $this->getPidDir, $params['uuid']);
         touch($pid);
 
+        // Define the file name for the STDOUT capture in case is needed
+        $stdoutFile = sprintf("%sdownloader-%s.stdout", $this->getStdoutLogDir, $params['uuid']);
+
         // [2013-10-30 13:30:15] DOWNLOAD: youtube-dl: test.mp4: movies: START: http://domain.com/test.mp4
         $log = sprintf("[%s] DOWNLOAD: %s: %s: %s: START: %s\r\n", date("Y-m-d H:i:s"), $dltype, $filename, $sfPath, $url);
         file_put_contents($this->getLogFile, $log, FILE_APPEND);
 
         // Start download
         $cmd = new \OMV\System\Process($cmdBin, $cmdArgs);
+
+        if ($captureStdout) {
+            // Capture the STDOUT of certain downloaders for further processing
+            $cmd->setRedirect1toFile($stdoutFile);
+        }
+
         $cmd->setQuiet(TRUE);
         $cmd->execute();
 
@@ -342,6 +372,11 @@ class OMVRpcServiceDownloader extends \OMV\Rpc\ServiceAbstract
 
         // Destroy pid file
         unlink($pid);
+
+        if ($captureStdout && file_exists($stdoutFile)) {
+            // Destroy the STDOUT file
+            unlink($stdoutFile);
+        }
 
         if ( $delete ) {
             // Delete the configuration object.
@@ -444,4 +479,44 @@ class OMVRpcServiceDownloader extends \OMV\Rpc\ServiceAbstract
             }
         );
     }
+
+    /**
+     * Parse the log file of the ulozto-downloader and return an object with the current status information
+     * @param String $file Path to the log file to pase
+     * @return Object with status info or NULL if nothing is found
+     */
+    private function parseUloztoDownloaderLog($file) {
+        $fp = fopen($file, "r");
+        $pos = -2;
+        $line = "{}";
+        
+        
+        while (!empty($line) && !$this->startsWith($line, '{"status": "downloading"')) {
+            while (fgetc($fp) != "\n") {
+                fseek($fp, $pos, SEEK_END);
+                $pos--;
+            }
+
+            $line = fgets($fp);
+            $pos--;
+        }
+
+        if ($this->startsWith($line, '{"status": "downloading"')) {
+            return json_decode($line);
+        }
+        else {
+            return null;
+        }
+    }
+
+    /**
+     * Checks if a string starts with a given substring
+     * @param String $haystack The string to search in.
+     * @param String needle The substring to search for in the haystack.
+     * @return true if haystack begins with needle, false otherwise.
+     */
+    private function startsWith($haystack, $needle) {
+        $length = strlen($needle);
+        return substr($haystack, 0, $length) === $needle;
+   }
 }
