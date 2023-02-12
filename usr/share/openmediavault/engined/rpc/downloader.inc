@@ -67,6 +67,7 @@ class OMVRpcServiceDownloader extends \OMV\Rpc\ServiceAbstract
         foreach ($objects as $objectk => &$objectv) {
             // Add new properties
             $objectv->add('downloading', 'boolean', false);
+            $objectv->add('download_progress', 'string', "-");
             $objectv->add('filesize', 'integer', 0);
             $objectv->add("sharedfoldername", "string", gettext("n/a"));
 
@@ -92,9 +93,11 @@ class OMVRpcServiceDownloader extends \OMV\Rpc\ServiceAbstract
             if ($dlType == "ulozto-downloader" && file_exists($stdoutFile)) {
                 $status = $this->parseUloztoDownloaderLog($stdoutFile);
                 if ($status && $basename === "") {
-                    // In case the destination file name has not been set by the user but autognerated by the downloader find it out
+                    // In case the destination file name has not been set by the user but autognerated by the downloader
+                    // find it out and store in the DB to allow file size tracking
                     $basename = $status->file;
                     $objectv->set("filename", $basename);
+                    $this->setDownloadFilename($objectv->get('uuid'), $basename);
                 }
             }
 
@@ -114,7 +117,8 @@ class OMVRpcServiceDownloader extends \OMV\Rpc\ServiceAbstract
                 $objectv->set('filesize', 0);
             } 
             elseif ($dlType == "ulozto-downloader" && $status) {
-                $objectv->set('filesize', intval(floatval($status->downloaded)*1024*1024));
+                $objectv->set('filesize', intval($status->downloaded_float));
+                $objectv->set('download_progress', $status->percent . "<br /> ". $status->curr_speed . "<br /> Remaining: " . $status->remaining);
             }
             else {
                 if (file_exists($filename)) {
@@ -138,6 +142,19 @@ class OMVRpcServiceDownloader extends \OMV\Rpc\ServiceAbstract
         // Filter the result.
         return $this->applyFilter($objectsAssoc, $params['start'], $params['limit'],
             $params['sortfield'], $params['sortdir']);
+    }
+
+    private function setDownloadFilename($uuid, $filename) {
+        // Update the file name stored in the DB for the given UUID
+        $db = \OMV\Config\Database::getInstance();
+
+        $confObj = $db->get("conf.service.downloader.download", $uuid);
+        $params = $confObj->getAssoc();
+
+        $params['filename'] = $filename;
+        
+        $confObj->setAssoc($params);
+        $db->set($confObj);
     }
 
     public function getDownload($params, $context)
@@ -266,12 +283,11 @@ class OMVRpcServiceDownloader extends \OMV\Rpc\ServiceAbstract
 
             case "ulozto-downloader":
                 $cmdBin = $this->getUloztoDownloader;
-                //$cmdArgs[] = "--temp /tmp";
+                $cmdArgs[] = "--temp /tmp";
                 $cmdArgs[] = "--auto-captcha";
                 $cmdArgs[] = "--frontend JSON";
                 $cmdArgs[] = sprintf("--output \"%s/%s\"", $sfPath, $filename);
-                //$cmdArgs[] = sprintf("--log \"%s\"", $this->getLogFile);
-                //$cmdArgs[] = sprintf("--parts \"%s\"", $partcount);
+                $cmdArgs[] = sprintf("--parts \"%s\"", $partcount);
                 $cmdArgs[] = sprintf("\"%s\"", $url);
                 $captureStdout = true;
                 break;

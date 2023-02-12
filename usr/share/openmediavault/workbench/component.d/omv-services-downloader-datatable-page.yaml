@@ -34,6 +34,10 @@ data:
         flexGrow: 1
         sortable: true
         cellTemplateName: checkIcon
+      - name: _("Download Progress")
+        prop: download_progress
+        flexGrow: 2
+        sortable: false
       - name: _("Filesize")
         prop: filesize
         flexGrow: 1
