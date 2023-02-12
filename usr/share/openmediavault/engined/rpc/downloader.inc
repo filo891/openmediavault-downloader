@@ -506,7 +506,7 @@ class OMVRpcServiceDownloader extends \OMV\Rpc\ServiceAbstract
         $pos = -2;
         $line = "{}";
         
-        
+        // Read the log file line-by-line from the end until "downloading" status message is found 
         while (!empty($line) && !$this->startsWith($line, '{"status": "downloading"')) {
             while (fgetc($fp) != "\n") {
                 fseek($fp, $pos, SEEK_END);
@@ -518,6 +518,7 @@ class OMVRpcServiceDownloader extends \OMV\Rpc\ServiceAbstract
         }
 
         if ($this->startsWith($line, '{"status": "downloading"')) {
+            // If a desired message object has been found, return it JSON-decoded
             return json_decode($line);
         }
         else {
